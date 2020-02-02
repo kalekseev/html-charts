@@ -1,4 +1,6 @@
+import html
 import math
+import typing
 from collections import namedtuple
 from functools import partial
 
@@ -10,11 +12,11 @@ E2 = math.sqrt(2)
 
 
 def getter_x(d):
-    return d['x']
+    return d["x"]
 
 
 def getter_y(d):
-    return d['y']
+    return d["y"]
 
 
 def get_ticks(start, stop, count=5):
@@ -222,49 +224,6 @@ pancake-point {
 """
 
 
-class HyperScript:
-    TAGS = [
-        "html",
-        "head",
-        "style",
-        "body",
-        "h1",
-        "h2",
-        "div",
-        "p",
-        "em",
-        "span",
-        "svg",
-        "path",
-        "d",
-    ]
-
-    def __init__(self):
-        for tag in self.TAGS:
-            setattr(self, tag, partial(self, tag))
-
-    def __call__(self, tag, attrs=None, children=None):
-        attrs = {} if attrs is None else attrs
-        children = [] if children is None else children
-        a = " ".join(f'{k}="{v}"' for k, v in attrs.items())
-        return f"<{tag} {a}>{''.join(str(c) for c in children)}</{tag}>"
-
-
-h = HyperScript()
-
-
-def pancake_chart(children=None):
-    return h("pancake-chart", {}, children)
-
-
-def pancake_box(children):
-    return h(
-        "pancake-box",
-        {"style": "left: 0%; bottom: 0%; width: 100%; height: 100%;"},
-        children,
-    )
-
-
 def linear(domain, range):
     d0 = domain[0]
     r0 = range[0]
@@ -276,60 +235,196 @@ def linear(domain, range):
     return resolve
 
 
-def pancake_grid(
-    count, context, children, ticks=None, horizontal=False, vertical=False
-):
-    def pancake_grid_item(value, first, last, horizontal, style):
+TAGS = [
+    "html",
+    "head",
+    "style",
+    "body",
+    "h1",
+    "h2",
+    "div",
+    "p",
+    "em",
+    "span",
+    "svg",
+    "path",
+    "d",
+]
+
+
+class HyperScript:
+    def __init__(self):
+        for tag in TAGS:
+            setattr(self, tag, partial(self, tag))
+
+    def __call__(self, tag, attrs=None, children=None):
+        attrs = {} if attrs is None else attrs
+        children = [] if children is None else children
+        a = " ".join(
+            f'class="{html.escape(str(v))}"'
+            if k == "className"
+            else f'{html.escape(k)}="{html.escape(str(v))}"'
+            for k, v in attrs.items()
+        )
+        return f"<{tag} {a}>{''.join(str(c) for c in children)}</{tag}>"
+
+
+h = HyperScript()
+
+
+class BaseHNode:
+    children: typing.Optional[typing.List["HNode"]]
+
+    def __str__(self) -> str:
+        return "".join(str(c) for c in self.children) if self.children else ""
+
+
+class HNode(BaseHNode):
+    children: typing.Optional[typing.List["HNode"]]
+
+    def __init__(
+        self,
+        children: typing.List[typing.Union[str, "HNode"]] = None,
+        **props: typing.Any,
+    ) -> None:
+        self.props = props
+        if children:
+            self.children = [
+                HString(children=c, dangerousHTML=props.get("dangerousHTML", False))
+                if isinstance(c, str)
+                else c
+                for c in children
+            ]
+        else:
+            self.children = children
+
+
+class HTag(HNode):
+    def __init__(
+        self,
+        tag,
+        children: typing.List[typing.Union[str, "HNode"]] = None,
+        **props: typing.Any,
+    ) -> None:
+        self.tag = tag
+        super().__init__(children=children, **props)
+
+    def __str__(self) -> str:
+        return h(self.tag, self.props, self.children)
+
+
+for tag in TAGS:
+    setattr(HTag, tag, partial(HTag, tag))
+
+
+class HString(BaseHNode):
+    def __init__(
+        self,
+        children: typing.List[typing.Union[str, "HNode"]] = None,
+        dangerousHTML=False,
+        **props: typing.Any,
+    ) -> None:
+        self.props = props
+        self.children = children if dangerousHTML else html.escape(children)
+
+    def __str__(self) -> str:
+        return self.children or ""
+
+
+class Chart(HNode):
+    def __str__(self) -> str:
+        return h("pancake-chart", {}, self.children)
+
+
+class Box(HNode):
+    def __str__(self) -> str:
         return h(
-            "pancake-grid-item",
-            {"style": style(value)},
-            children(value=value, first=first, last=last) if callable(children) else children,
+            "pancake-box",
+            {"style": "left: 0%; bottom: 0%; width: 100%; height: 100%;"},
+            self.children,
         )
 
-    scale_x, scale_y = context["scale_x"], context["scale_y"]
-    if horizontal:
-        if ticks is None:
-            ticks = get_ticks(context["min_y"], context["max_y"], count)
-        style = lambda y: f"width: 100%; height: 0; top: {scale_y(y)}%"
-    else:
-        if ticks is None:
-            ticks = get_ticks(context["min_x"], context["max_x"], count)
-        style = lambda x: f"width: 0; height: 100%; left: {scale_x(x)}%"
 
-    lindex = len(ticks) - 1
-    return h(
-        "pancake-grid",
-        {},
-        [pancake_grid_item(
-            tick,
-            first=i == 0,
-            last=i == lindex,
-            horizontal=horizontal,
-            style=style,
-        ) for i, tick in enumerate(ticks)],
-    )
+class GridItem(HNode):
+    def __str__(self):
+        return h(
+            "pancake-grid-item",
+            {"style": self.props["style"](self.props["value"])},
+            self.props["renderer"](
+                value=self.props["value"],
+                first=self.props["first"],
+                last=self.props["last"],
+            ),
+        )
 
 
-def pancake_svg_line(data, context, children, x=getter_x, y=getter_y):
-    scale_x, scale_y = context["scale_x"], context["scale_y"]
-    d = "M" + "L".join((f'{scale_x(x(d))},{scale_y(y(d))}' for d in data))
-    return children(d)
+class Grid(HNode):
+    def __init__(
+        self, count, context, renderer, ticks=None, horizontal=False, vertical=False
+    ):
+        super().__init__(renderer=renderer)
+        scale_x, scale_y = context["scale_x"], context["scale_y"]
+        self.ticks = ticks
+        if horizontal:
+            if ticks is None:
+                self.ticks = get_ticks(context["min_y"], context["max_y"], count)
+            self.style = lambda y: f"width: 100%; height: 0; top: {scale_y(y)}%"
+        else:
+            if ticks is None:
+                self.ticks = get_ticks(context["min_x"], context["max_x"], count)
+            self.style = lambda x: f"width: 0; height: 100%; left: {scale_x(x)}%"
+
+    def __str__(self):
+        lindex = len(self.ticks) - 1
+        return h(
+            "pancake-grid",
+            {},
+            [
+                GridItem(
+                    value=tick,
+                    first=i == 0,
+                    last=i == lindex,
+                    style=self.style,
+                    renderer=self.props["renderer"],
+                )
+                for i, tick in enumerate(self.ticks)
+            ],
+        )
 
 
-def pancake_svg_scatterplot(data, context, children, x=getter_x, y=getter_y):
-    scale_x, scale_y = context["scale_x"], context["scale_y"]
-    result = []
-    for datum in data:
-        sx = scale_x(x(datum))
-        sy = scale_y(y(datum))
-        result.append(f"M{sx} {sy} A0 0 0 0 1 {sx} {sy}")
-    d = " ".join(result)
-    return children(d)
+class SvgLine(HNode):
+    def __init__(self, points, context, renderer, x=getter_x, y=getter_y):
+        super().__init__()
+        scale_x, scale_y = context["scale_x"], context["scale_y"]
+        d = "M" + "L".join((f"{scale_x(x(d))},{scale_y(y(d))}" for d in points))
+        self.children = [renderer(d)]
 
 
-def pancake_point(context, x, y, children):
-    scale_x, scale_y = context["scale_x"], context["scale_y"]
-    return h('pancake-point', {'style': f'left: {scale_x(x)}%; top: {scale_y(y)}%'}, children)
+class SvgScatterplot(HNode):
+    def __init__(self, data, context, renderer, x=getter_x, y=getter_y):
+        super().__init__(renderer=renderer)
+        scale_x, scale_y = context["scale_x"], context["scale_y"]
+        result = []
+        for datum in data:
+            sx = scale_x(x(datum))
+            sy = scale_y(y(datum))
+            result.append(f"M{sx} {sy} A0 0 0 0 1 {sx} {sy}")
+        self.d = " ".join(result)
+        self.children = [self.props["renderer"](self.d)]
+
+
+class Point(HNode):
+    def __str__(self):
+        x, y = self.props["x"], self.props["y"]
+        scale_x, scale_y = (
+            self.props["context"]["scale_x"],
+            self.props["context"]["scale_y"],
+        )
+        return h(
+            "pancake-point",
+            {"style": f"left: {scale_x(x)}%; top: {scale_y(y)}%"},
+            self.children,
+        )
 
 
 DATA = [
@@ -362,26 +457,33 @@ def simple_chart():
         "scale_x": scale_x,
         "scale_y": scale_y,
     }
-    return h.div({"class": "chart"}, [
-        pancake_chart(children=[
-            pancake_box(
-                children=h.div({'class': 'axes'}),
+    return HTag.div(className="chart", children=[
+        Chart(children=[
+            Box(
+                children=[HTag.div(className='axes')],
             ),
-            pancake_grid(
+            Grid(
                 count=5,
                 context=context,
-                children=lambda value, **kwargs: [h.span({"class": "label x"}, [value])],
+                renderer=lambda value, **kwargs: [HTag.span(className="label x", children=[value])],
                 vertical=True,
             ),
-            pancake_grid(
+            Grid(
                 count=2,
                 context=context,
-                children=lambda value, **kwargs: [h.span({"class": "label y"}, [value])],
+                renderer=lambda value, **kwargs: [HTag.span(className="label y", children=[value])],
                 horizontal=True,
             ),
-            h.svg(
-                {"viewBox": "0 0 100 100", "preserveAspectRatio": "none"},
-                [pancake_svg_line(DATA, context, children=lambda d: h.path({"class": "data", "d": d}))],
+            HTag.svg(
+                viewBox="0 0 100 100",
+                preserveAspectRatio="none",
+                children=[
+                    SvgLine(
+                        points=DATA,
+                        context=context,
+                        renderer=lambda d: HTag.path(className="data", d=d),
+                    )
+                ],
             )
         ])
     ])
@@ -390,11 +492,11 @@ def simple_chart():
 
 
 def chart():
-    Point = namedtuple("Point", ["date", "avg", "trend"])
+    PPoint = namedtuple("PPoint", ["date", "avg", "trend"])
     with open("carbon.txt", "r") as f:
         points = [
-            Point(float(date), float(avg), float(trend))
-            for (date, avg, trend) in [line.strip().split('\t') for line in f]
+            PPoint(float(date), float(avg), float(trend))
+            for (date, avg, trend) in [line.strip().split("\t") for line in f]
             if avg != "-99.99"
         ]
     spoints = sorted(points, key=lambda p: p.avg)
@@ -415,89 +517,99 @@ def chart():
     }
 
     # fmt: off
-    return h.div({'class': 'chart'}, [
-        pancake_chart(children=[
-            pancake_grid(
+    return HTag.div(className='chart', children=[
+        Chart(children=[
+            Grid(
                 count=5,
                 context=context,
-                children=lambda value, last, **kwargs: [h.div({"class": "grid-line horizontal"}, [h.span(children=[f'{value}{" ppm" if last else ""}'])])],
+                renderer=lambda value, last, **kwargs: [
+                    HTag.div(
+                        className="grid-line horizontal",
+                        children=[HTag.span(children=[f'{value}{" ppm" if last else ""}'])],
+                    ),
+                ],
                 horizontal=True,
             ),
-            pancake_grid(
+            Grid(
                 count=5,
                 context=context,
-                children=lambda value, **kwargs: [
-                    h.div({'class': 'grid-line vertical'}),
-                    h.span({"class": "year-label"}, [value])
+                renderer=lambda value, **kwargs: [
+                    HTag.div(className='grid-line vertical'),
+                    HTag.span(className="year-label", children=[value])
                 ],
                 vertical=True,
             ),
-            h.svg(
-                {"viewBox": "0 0 100 100", "preserveAspectRatio": "none"},
-                [
-                    pancake_svg_scatterplot(
+            HTag.svg(
+                viewBox="0 0 100 100",
+                preserveAspectRatio="none",
+                children=[
+                    SvgScatterplot(
                         points,
                         context=context,
-                        children=lambda d: h.path({'class': 'avg scatter', 'd': d}),
+                        renderer=lambda d: HTag.path(className='avg scatter', d=d),
                         x=lambda d: d.date,
                         y=lambda d: d.avg,
                     ),
-                    pancake_svg_line(
-                        points,
-                        context,
-                        children=lambda d: h.path({"class": "avg", "d": d}),
+                    SvgLine(
+                        points=points,
+                        context=context,
+                        renderer=lambda d: HTag.path(className="avg", d=d),
                         x=lambda d: d.date,
                         y=lambda d: d.avg,
                     ),
-                    pancake_svg_line(
-                        points,
-                        context,
-                        children=lambda d: h.path({"class": "trend", "d": d}),
+                    SvgLine(
+                        points=points,
+                        context=context,
+                        renderer=lambda d: HTag.path(className="trend", d=d),
                         x=lambda d: d.date,
                         y=lambda d: d.trend,
                     ),
                 ],
             ),
-            pancake_point(
-                context,
+            Point(
+                context=context,
                 x=1962,
                 y=390,
                 children=[
-                    h.div({'class': 'text'}, [
-                        h.h2(children=["Atmospheric CO₂"]),
-                        h.p(children=[
-                            h.span({'style': "color: #676778"}, ['•']),
-                            h.span(children=['monthly average&nbsp;&nbsp;&nbsp;']),
-                            h.span({'style': "color: #ff3e00"}, ['—']),
-                            h.span(children=['trend']),
+                    HTag.div(className='text', children=[
+                        HTag.h2(children=["Atmospheric CO₂"]),
+                        HTag.p(children=[
+                            HTag.span(style="color: #676778", children=['•']),
+                            HTag.span(children=['monthly average&nbsp;&nbsp;&nbsp;'], dangerousHTML=True),
+                            HTag.span(style="color: #ff3e00", children=['—']),
+                            HTag.span(children=['trend']),
                         ])
                     ]),
                 ],
             ),
-            pancake_point(
-                context,
+            Point(
+                context=context,
                 x=2015,
                 y=330,
                 children=[
-                    h.div({'class': 'text', 'style': 'right: 0; text-align: right;'}, [
-                        h.p(children=[
-                            h.em(children=['This chart will render correctly even if JavaScript is disabled.']),
+                    HTag.div(className='text', style='right: 0; text-align: right;', children=[
+                        HTag.p(children=[
+                            HTag.em(children=['This chart will render correctly even if JavaScript is disabled.']),
                         ])
                     ]),
                 ],
             ),
-            pancake_point(
-                context,
+            Point(
+                context=context,
                 x=highest.date,
                 y=highest.avg,
                 children=[
-                    h.div({'class': 'annotation', 'style': 'position: absolute; right: 0.5em; top: -0.5em; white-space: nowrap; line-height: 1; color: #666;'}, [
-                        f'{highest.avg} parts per million (ppm) &rarr;'
-                    ]),
+                    HTag.div(
+                        className='annotation',
+                        style='position: absolute; right: 0.5em; top: -0.5em; white-space: nowrap; line-height: 1; color: #666;',
+                        dangerousHTML=True,
+                        children=[f'{highest.avg} parts per million (ppm) &rarr;'],
+                    ),
                 ],
             )
         ])
     ])
+    # fmt: on
 
 
 app = Flask(__name__)
@@ -506,16 +618,17 @@ app = Flask(__name__)
 # fmt: off
 @app.route("/")
 def index():
-    return h.html(
-        None, [
-            h.head(children=[
-                h.style(children=[style])
+    return str(HTag.html(
+        children=[
+            HTag.head(children=[
+                HTag.style(children=[style])
             ]),
-            h.body({'style': "height: 100%; max-height: 400px"}, [
-                h.h2(attrs={'style': 'margin: 40px 0 0 40px'}, children=["Carbon Chart"]),
+            HTag.body(style="height: 100%; max-height: 400px", children=[
+                HTag.h2(style='margin: 40px 0 0 40px', children=["Carbon Chart"]),
                 chart(),
-                h.h2(attrs={'style': 'margin: 40px 0 0 40px'}, children=["Simple Chart"]),
+                HTag.h2(style='margin: 40px 0 0 40px', children=["Simple Chart"]),
                 simple_chart(),
             ])
         ]
-    )
+    ))
+# fmt: on
